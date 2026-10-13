@@ -1,14 +1,14 @@
 # omarchy-lan-lockdown
 
-🛡️ **One-click stealth and network lockdown for Omarchy Linux at LAN parties and hostile networks.**
+🛡️ **One-click stealth, inbound firewall lockdown, and autonomous agent honeypot for Omarchy Linux.**
 
-Play games freely while completely locking down your machine against automated port scanners, network fuzzers, and autonomous reconnaissance agents.
+Play games freely while completely locking down your machine against automated port scanners, network fuzzers, and autonomous reconnaissance agents—and catch attackers in the act.
 
 ---
 
 ## ⚡ What it Does
 
-When you're at a LAN party or on an untrusted Wi-Fi network, attackers and automated AI agents sweep the local subnet for open services, vulnerable ports, mDNS broadcasts, and device fingerprints.
+When you're at a LAN party or on an untrusted network, attackers and automated AI agents sweep the local subnet for open services, vulnerable ports, mDNS broadcasts, and device fingerprints.
 
 **LAN Lockdown** gives you a one-click toggle directly in your Omarchy status bar:
 
@@ -20,11 +20,32 @@ When you're at a LAN party or on an untrusted Wi-Fi network, attackers and autom
 | **Local File Shares** | LocalSend / file sharing apps active | **Closed & stopped** |
 | **Bluetooth** | Discoverable/Powered | **Powered off** |
 | **Tailscale** | Connected | **Disconnected** (`tailscale down`) |
+| **🪤 Decoy Honeypot** | Inactive | **Active on port 11434 (Ollama bait)** |
 | **Gaming (Steam, Proton, Online)** | Working | **100% Working** |
 
 > [!NOTE]
 > **Why doesn't this break online gaming?**  
 > Modern games, Steam, matchmaking, Discord, and anti-cheat only require **outbound** network connections. Linux uses a stateful firewall (`conntrack`), so when your game connects out to a game lobby or matchmaking server, return packets are automatically permitted back in.
+
+---
+
+## 🪤 The Agent-Bait Honeypot
+
+Scanning agents (like AutoGPT, PentestGPT, or custom network crawlers) specifically probe port **`11434`** looking for unauthenticated Ollama/LLM endpoints.
+
+When LAN Lockdown is active, a lightweight in-memory HTTP sinkhole starts on port `11434` mimicking a live Ollama instance. When an agent or scanner touches it:
+
+1. **Captures Hardware MAC:** Queries the Linux kernel ARP/neighbor table (`ip neigh`) to grab the prober's hardware MAC address.
+2. **Captures Software Fingerprint:** Extracts `User-Agent` (e.g. `python-requests`, `Go-http-client`, `LangChain`, `curl`, `nmap`).
+3. **Captures Targets & Payloads:** Logs the exact paths requested (`/api/tags`, `/.env`, `/admin`) and prompt payloads.
+4. **Desktop Notification:** Dispatches an immediate high-priority Omarchy desktop notification:
+   ```
+   🚨 Honeypot Probe Detected!
+   Host: 192.168.86.105 (f4:f5:e8:71:22:90)
+   Tool: python-requests/2.31.0
+   Target: GET /api/tags
+   ```
+5. **Panel Feed:** Displays recent probes directly in the Omarchy status bar popup card.
 
 ---
 
@@ -45,9 +66,13 @@ omarchy plugin add https://github.com/Jeffe747/omarchy-lan-lockdown.git --enable
 ### 1. From the Status Bar
 Click the shield icon in your top bar:
 - **`󰀝` (Muted Shield):** Standard network mode.
-- **`󰒃` (Active Shield):** LAN Lockdown is engaged.
+- **`󰒃` (Active Shield):** LAN Lockdown is engaged (Stealth + Honeypot).
 
-Clicking opens the quick card where you can see the status of each protection layer and toggle Lockdown with one click.
+Clicking opens the quick card where you can see:
+* The live status of each protection layer.
+* Active honeypot status.
+* Live feed of captured probes (IP, MAC address, tool, target).
+* One-click toggle button.
 
 ### 2. From Omarchy Menu (`SUPER + SPACE`)
 You can optionally register a toggle in `~/.config/omarchy/extensions/omarchy-menu.jsonc`:
@@ -65,14 +90,17 @@ You can optionally register a toggle in `~/.config/omarchy/extensions/omarchy-me
 ```
 
 ### 3. CLI
-You can also inspect or toggle lockdown directly from your terminal:
+You can also inspect, toggle, or view probes directly from your terminal:
 
 ```bash
-# Query JSON status
+# Query status and recent probes (JSON)
 python3 ~/.config/omarchy/plugins/jeffe747.lan-lockdown/backend.py status
 
-# Toggle lockdown (prompts for Polkit authorization if needed)
+# Toggle lockdown
 python3 ~/.config/omarchy/plugins/jeffe747.lan-lockdown/backend.py toggle
+
+# Clear captured probe history
+python3 ~/.config/omarchy/plugins/jeffe747.lan-lockdown/backend.py clear-probes
 ```
 
 ---

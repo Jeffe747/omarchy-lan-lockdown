@@ -2,19 +2,33 @@
 """Omarchy LAN Lockdown Backend Helper.
 
 Provides status queries and executes lockdown / restore procedures.
+Manages the decoy honeypot daemon on port 11434.
 Privileged actions automatically elevate via pkexec when executed by an unprivileged user.
 """
 
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
 
-STATE_FILE = "/etc/lan-lockdown.json"
+STATE_DIR = "/var/lib/lan-lockdown"
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+PROBES_FILE = os.path.join(STATE_DIR, "probes.json")
+HONEYPOT_PID_FILE = os.path.join(STATE_DIR, "honeypot.pid")
 ANONYMOUS_HOSTNAME = "guest-pc"
+HONEYPOT_PORT = 11434
+
+
+def ensure_state_dir():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        os.chmod(STATE_DIR, 0o755)
+    except Exception:
+        pass
 
 
 def is_root():
@@ -45,6 +59,7 @@ def read_state():
 
 
 def write_state(data):
+    ensure_state_dir()
     try:
         with open(STATE_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -132,6 +147,82 @@ def is_localsend_running():
         return False
 
 
+def is_honeypot_running():
+    if os.path.exists(HONEYPOT_PID_FILE):
+        try:
+            with open(HONEYPOT_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def start_honeypot():
+    if is_honeypot_running():
+        return
+
+    ensure_state_dir()
+    honeypot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "honeypot.py")
+    if not os.path.exists(honeypot_script):
+        return
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, honeypot_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        with open(HONEYPOT_PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        os.chmod(HONEYPOT_PID_FILE, 0o644)
+    except Exception as e:
+        print(f"Failed to start honeypot: {e}", file=sys.stderr)
+
+    # Allow port in UFW specifically for decoy
+    if shutil.which("ufw"):
+        try:
+            subprocess.run(["ufw", "allow", f"{HONEYPOT_PORT}/tcp"], check=False, timeout=5)
+            subprocess.run(["ufw", "reload"], check=False, timeout=5)
+        except Exception:
+            pass
+
+
+def stop_honeypot():
+    if os.path.exists(HONEYPOT_PID_FILE):
+        try:
+            with open(HONEYPOT_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        try:
+            os.remove(HONEYPOT_PID_FILE)
+        except Exception:
+            pass
+
+    # Remove UFW decoy rule
+    if shutil.which("ufw"):
+        try:
+            subprocess.run(["ufw", "delete", "allow", f"{HONEYPOT_PORT}/tcp"], check=False, timeout=5)
+            subprocess.run(["ufw", "reload"], check=False, timeout=5)
+        except Exception:
+            pass
+
+
+def get_recent_probes():
+    if os.path.exists(PROBES_FILE):
+        try:
+            with open(PROBES_FILE, "r") as f:
+                probes = json.load(f)
+                return probes[:10]
+        except Exception:
+            pass
+    return []
+
+
 def get_status():
     state = read_state()
     current_host = get_current_hostname()
@@ -139,8 +230,9 @@ def get_status():
     bt_powered = is_bluetooth_powered()
     ts_active = is_tailscale_active()
     ls_running = is_localsend_running()
+    hp_running = is_honeypot_running()
+    probes = get_recent_probes()
 
-    # If state file exists with locked=True, or if hostname is the anonymous one and avahi is stopped
     is_locked = False
     original_hostname = ""
     if state and state.get("locked"):
@@ -158,6 +250,9 @@ def get_status():
         "bluetoothPowered": bt_powered,
         "tailscaleActive": ts_active,
         "localsendRunning": ls_running,
+        "honeypotRunning": hp_running,
+        "probes": probes,
+        "probeCount": len(probes),
     }
 
 
@@ -221,19 +316,23 @@ def engage_lockdown():
         except Exception:
             pass
 
-    # 7. Record state
+    # 7. Start Honeypot Decoy (Ollama on port 11434)
+    start_honeypot()
+
+    # 8. Record state
     state_payload = {
         "locked": True,
         "originalHostname": orig_host,
         "timestamp": time.time(),
         "localsendRestorable": True,
+        "honeypotActive": True,
     }
     write_state(state_payload)
 
     return {
         "ok": True,
         "locked": True,
-        "message": "LAN Lockdown engaged: Inbound traffic blocked, Avahi silenced, hostname anonymized.",
+        "message": "LAN Lockdown engaged: Inbound traffic blocked, Avahi silenced, decoy honeypot active.",
     }
 
 
@@ -243,14 +342,17 @@ def restore_normal():
     existing_state = read_state() or {}
     orig_host = existing_state.get("originalHostname", "")
 
-    # 1. Restore hostname
+    # 1. Stop Honeypot
+    stop_honeypot()
+
+    # 2. Restore hostname
     if orig_host and orig_host != ANONYMOUS_HOSTNAME:
         try:
             subprocess.run(["hostnamectl", "set-hostname", orig_host], check=False, timeout=5)
         except Exception:
             pass
 
-    # 2. Start Avahi (mDNS)
+    # 3. Start Avahi (mDNS)
     try:
         subprocess.run(
             ["systemctl", "start", "avahi-daemon.socket", "avahi-daemon.service"],
@@ -260,7 +362,7 @@ def restore_normal():
     except Exception:
         pass
 
-    # 3. Restore UFW LocalSend rule if it was originally present
+    # 4. Restore UFW LocalSend rule if it was originally present
     if shutil.which("ufw"):
         try:
             if existing_state.get("localsendRestorable", True):
@@ -270,14 +372,14 @@ def restore_normal():
         except Exception:
             pass
 
-    # 4. Restore Bluetooth
+    # 5. Restore Bluetooth
     if shutil.which("bluetoothctl"):
         try:
             subprocess.run(["bluetoothctl", "power", "on"], check=False, timeout=5)
         except Exception:
             pass
 
-    # 5. Remove state file
+    # 6. Remove state file
     remove_state()
 
     return {
@@ -295,6 +397,15 @@ def toggle():
         return engage_lockdown()
 
 
+def clear_probes():
+    if os.path.exists(PROBES_FILE):
+        try:
+            os.remove(PROBES_FILE)
+        except Exception:
+            pass
+    return {"ok": True, "message": "Probe history cleared"}
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
 
@@ -306,6 +417,8 @@ def main():
         res = restore_normal()
     elif action == "toggle":
         res = toggle()
+    elif action == "clear-probes":
+        res = clear_probes()
     else:
         res = {"ok": False, "error": f"Unknown action: {action}"}
 
