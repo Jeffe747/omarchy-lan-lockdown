@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "jeffe747.lan-lockdown",
+  "name": "LAN Lockdown",
+  "version": "1.0.0",
+  "author": "Jeffe747",
+  "license": "MIT",
+  "description": "One-click stealth and inbound firewall lockdown for LAN parties",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "LAN Lockdown",
+    "description": "One-click stealth and inbound firewall lockdown for LAN parties",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
