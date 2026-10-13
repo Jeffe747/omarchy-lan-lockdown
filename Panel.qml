@@ -99,8 +99,11 @@ Panel {
     id: icon
     anchors.fill: parent
     bar: root.bar
-    text: root.lockedDown ? (root.probeCount > 0 ? "󰒃" : "󰒃") : "󰀝"
-    color: root.lockedDown ? (root.probeCount > 0 ? Color.urgent : (root.bar ? root.bar.urgent : Color.urgent)) : (root.bar ? root.bar.foreground : Color.foreground)
+    text: root.lockedDown ? "󰒃" : "󰀝"
+    active: root.lockedDown
+    useActiveColor: true
+    activeColor: root.probeCount > 0 ? Color.urgent : (root.bar ? root.bar.urgent : Color.urgent)
+    foreground: root.bar ? root.bar.barForeground : Color.foreground
     tooltipText: root.lockedDown
       ? (root.probeCount > 0 ? ("LAN Lockdown: " + root.probeCount + " probes captured!") : "LAN Lockdown: Active (Stealth & Honeypot)")
       : "LAN Lockdown: Inactive"
