@@ -155,6 +155,9 @@ def is_honeypot_running():
                 pid = int(f.read().strip())
             os.kill(pid, 0)
             return True
+        except OSError as e:
+            import errno
+            return e.errno == errno.EPERM
         except Exception:
             pass
     return False
