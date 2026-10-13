@@ -36,6 +36,10 @@ Panel {
     actionProcess.running = true
   }
 
+  function exportReport() {
+    exportProcess.running = true
+  }
+
   onOpenedChanged: if (opened) refresh()
 
   Timer {
@@ -95,11 +99,19 @@ Panel {
     }
   }
 
+  Process {
+    id: exportProcess
+    command: ["python3", root.helper, "report", "--export"]
+    onExited: function(code) {
+      root.refresh()
+    }
+  }
+
   BarIconButton {
     id: icon
     anchors.fill: parent
     bar: root.bar
-    text: root.lockedDown ? "󰒃" : "󰀝"
+    text: root.lockedDown ? "󰦝" : "󰒙"
     active: root.lockedDown
     useActiveColor: true
     activeColor: root.probeCount > 0 ? Color.urgent : (root.bar ? root.bar.urgent : Color.urgent)
@@ -141,7 +153,7 @@ Panel {
           height: Style.space(20)
           width: statusBadgeText.implicitWidth + Style.space(12)
           radius: Style.cornerRadius
-          color: root.lockedDown ? (root.probeCount > 0 ? Color.urgent : Color.urgent) : Color.muted
+          color: root.lockedDown ? Color.urgent : Color.muted
           opacity: 0.9
           anchors.verticalCenter: parent.verticalCenter
 
@@ -248,12 +260,28 @@ Panel {
         Row {
           width: parent.width
           spacing: Style.space(6)
+
           Text {
             text: "Captured Probes (" + root.probeCount + ")"
             color: root.barForeground
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             font.bold: true
+          }
+
+          Text {
+            visible: root.probeCount > 0
+            text: "·  Export Report"
+            color: root.bar ? root.bar.foreground : Color.foreground
+            font.pixelSize: Style.font.caption
+            font.underline: true
+            opacity: 0.85
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.exportReport()
+            }
           }
         }
 

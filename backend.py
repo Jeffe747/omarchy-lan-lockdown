@@ -2,10 +2,11 @@
 """Omarchy LAN Lockdown Backend Helper.
 
 Provides status queries and executes lockdown / restore procedures.
-Manages the decoy honeypot daemon on port 11434.
+Manages the decoy honeypot daemon on port 11434 and generates incident reports.
 Privileged actions automatically elevate via pkexec when executed by an unprivileged user.
 """
 
+from datetime import datetime
 import json
 import os
 import shutil
@@ -406,6 +407,93 @@ def clear_probes():
     return {"ok": True, "message": "Probe history cleared"}
 
 
+def generate_report(export=False):
+    probes = []
+    if os.path.exists(PROBES_FILE):
+        try:
+            with open(PROBES_FILE, "r") as f:
+                probes = json.load(f)
+        except Exception:
+            probes = []
+
+    if not probes:
+        md = "# 🪤 LAN Honeypot Incident Report\n\nNo probes detected yet during this session.\n"
+    else:
+        # Group by IP / MAC
+        attackers = {}
+        for p in probes:
+            key = (p.get("ip", "unknown"), p.get("mac", "unknown"))
+            if key not in attackers:
+                attackers[key] = {
+                    "ip": p.get("ip", "unknown"),
+                    "mac": p.get("mac", "unknown"),
+                    "hostname": p.get("hostname", ""),
+                    "user_agents": set(),
+                    "requests": [],
+                    "first_seen": p.get("time_str", ""),
+                    "last_seen": p.get("time_str", ""),
+                }
+            if p.get("user_agent"):
+                attackers[key]["user_agents"].add(p.get("user_agent"))
+            attackers[key]["requests"].append(p)
+            attackers[key]["last_seen"] = p.get("time_str", "")
+
+        lines = [
+            "# 🪤 LAN Honeypot Incident Report",
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Total Probes Captured:** {len(probes)}",
+            f"**Unique Devices:** {len(attackers)}",
+            "",
+            "---",
+            "",
+            "## Identified Probers & Attackers",
+            "",
+        ]
+
+        for i, (key, info) in enumerate(attackers.items(), 1):
+            lines.append(f"### {i}. `{info['ip']}` (MAC: `{info['mac']}`)")
+            if info["hostname"]:
+                lines.append(f"- **Resolved Hostname:** `{info['hostname']}`")
+            tools = ", ".join(f"`{ua}`" for ua in info["user_agents"]) if info["user_agents"] else "None / Raw TCP"
+            lines.append(f"- **Scanner Tools / User-Agents:** {tools}")
+            lines.append(f"- **Total Requests:** {len(info['requests'])}")
+            lines.append(f"- **Activity Window:** {info['last_seen']} → {info['first_seen']}")
+            lines.append("- **Targeted Endpoints:**")
+            for req in info["requests"][:10]:
+                payload_note = f" (Payload: `{req['payload'][:60]}...`)" if req.get("payload") else ""
+                lines.append(f"  - `{req.get('time_str', '')}` — `{req.get('method', 'GET')} {req.get('path', '/')}`{payload_note}")
+            lines.append("")
+
+        md = "\n".join(lines)
+
+    export_path = None
+    if export:
+        home = os.environ.get("HOME", "/home/jaj")
+        desktop = os.path.join(home, "Desktop")
+        target_dir = desktop if os.path.exists(desktop) else home
+        target_path = os.path.join(target_dir, "lan-honeypot-report.md")
+        try:
+            with open(target_path, "w") as f:
+                f.write(md)
+            export_path = target_path
+            # Send notification
+            subprocess.run(
+                ["notify-send", "-i", "document-save", "📄 Honeypot Report Saved", f"Saved to {export_path}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception as e:
+            print(f"Failed to export report: {e}", file=sys.stderr)
+
+    return {
+        "ok": True,
+        "report": md,
+        "exportPath": export_path or "",
+        "probeCount": len(probes),
+    }
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
 
@@ -419,6 +507,12 @@ def main():
         res = toggle()
     elif action == "clear-probes":
         res = clear_probes()
+    elif action == "report":
+        export = "--export" in sys.argv
+        res = generate_report(export=export)
+        if not export and sys.stdout.isatty():
+            print(res["report"])
+            return
     else:
         res = {"ok": False, "error": f"Unknown action: {action}"}
 
